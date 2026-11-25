@@ -59,6 +59,32 @@
   textarea { width: 100%; min-height: 110px; border-radius: 12px; border: 0; padding: 10px; font: 13px ui-monospace, monospace; background: #1b0f33; color: var(--ink); user-select: text; -webkit-user-select: text; }
   .err { color: var(--rose); min-height: 1.4em; margin: 6px 0; }
   .btns { display: flex; gap: 10px; flex-wrap: wrap; }
+  .dust { font-size: 12px; color: var(--gold); margin-top: 4px; }
+  .side { position: absolute; right: 12px; top: calc(118px + env(safe-area-inset-top)); display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+  .side button { padding: 10px 14px; font-size: 14px; }
+  .berrywrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  #berry { background: radial-gradient(circle at 38% 34%, hsl(var(--h, 330) 90% 78%), hsl(var(--h, 330) 70% 52%) 60%, hsl(var(--h, 330) 70% 30%)); }
+  #berry.empty { filter: grayscale(1); opacity: .6; }
+  .chip-btn { padding: 6px 10px; font-size: 12px; background: rgba(255, 255, 255, .14); color: var(--ink); }
+  body.questing #toast { top: calc(170px + env(safe-area-inset-top)); }
+  .qtop { position: absolute; left: 12px; right: 12px; top: calc(104px + env(safe-area-inset-top)); text-align: center; }
+  .qtop b { font: 20px/1.1 'Mystery Quest', cursive; color: var(--gold); display: block; }
+  .qtop small { color: var(--dim); }
+  .qbottom { position: absolute; left: 12px; right: 12px; bottom: calc(14px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 8px; }
+  #q-lits { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  #q-lits .lit { background: var(--panel); color: var(--ink); border-radius: 14px; padding: 6px 10px; font-size: 13px; border-left: 5px solid hsl(var(--h) 70% 60%); text-align: left; }
+  #q-lits .lit b { display: block; } #q-lits .lit span { color: var(--gold); letter-spacing: 1px; } #q-lits .lit i { color: var(--dim); font-style: normal; }
+  #q-lits .lit.held { outline: 2px solid #cfd8ff; }
+  .qbtns { display: flex; gap: 10px; justify-content: center; }
+  .sheet .row { display: block; width: 100%; text-align: left; margin: 0 0 8px; border-radius: 14px; background: rgba(255, 255, 255, .1); color: var(--ink); padding: 10px 14px; }
+  .sheet .row.portal, .sheet .row.lit-row { border-left: 6px solid hsl(var(--h) 70% 60%); }
+  .sheet .row b { display: block; } .sheet .row small { color: var(--dim); font-weight: 400; }
+  .sheet h3 { margin: 14px 0 6px; color: var(--gold); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .chip { background: rgba(255, 255, 255, .12); color: var(--ink); padding: 8px 12px; font-size: 14px; }
+  .chip small { color: var(--dim); font-weight: 400; } .chip.on { background: var(--gold); color: #2a1640; } .chip.on small { color: #4a2a60; }
+  .sheet li em { color: var(--dim); font-style: normal; font-size: 13px; }
+  .sheet ul.loot li { justify-content: flex-start; }
   @media (max-width: 380px) { #menu .row button { min-width: 0; flex: 1; } }
 </style>
 <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }</script>
@@ -72,14 +98,25 @@
     <div class="top">
       <div class="card who">
         <b id="name"></b><small id="form"></small>
-        <div class="meters"><div class="m">Joy<div class="bar"><i id="joy"></i></div></div><div class="m">Belly<div class="bar"><i id="belly"></i></div></div></div>
+        <div class="meters"><div class="m">Joy<div class="bar"><i id="joy"></i></div></div><div class="m">Belly<div class="bar"><i id="belly"></i></div></div><div class="m">Rest<div class="bar"><i id="rest"></i></div></div></div>
+        <div class="dust" id="dust"></div>
       </div>
       <button id="leave" class="ghost">Leave</button>
     </div>
-    <div class="bottom">
-      <button id="tricks-btn" class="ghost">Tricks <small id="tricks-n"></small></button>
-      <button id="berry" aria-label="Berry: flick up to throw">Berry<span>flick up</span></button>
-      <button id="move" class="ghost" hidden>Move</button>
+    <div id="nest-ui">
+      <div class="side"><button id="where">Where to?</button><button id="sleep" class="ghost">Sleep</button></div>
+      <div class="bottom">
+        <button id="tricks-btn" class="ghost">Tricks <small id="tricks-n"></small></button>
+        <div class="berrywrap"><button id="berry" aria-label="Berry: flick up to throw, tap to toss"><span id="berry-name"></span><span>flick up</span></button><button id="berry-change" class="chip-btn" hidden>Change berry</button></div>
+        <button id="move" class="ghost" hidden>Move</button>
+      </div>
+    </div>
+    <div id="quest-ui" hidden>
+      <div class="qtop card"><b id="q-name"></b><small id="q-shards"></small></div>
+      <div class="qbottom">
+        <div id="q-lits"></div>
+        <div class="qbtns"><button id="q-rally" class="ghost">Rally</button><button id="q-home" class="ghost">Head home</button></div>
+      </div>
     </div>
   </div>
   <div id="place-hint"></div>
@@ -91,20 +128,9 @@
     <p id="ar-status" style="margin-top:12px">Checking for AR…</p>
     <div class="row"><button id="bring" class="ghost">Bring in your Glimmerkin</button><button id="fresh" class="ghost">New creature</button></div>
   </div>
-  <div id="tricks" class="sheet">
-    <h2>Tricks</h2>
-    <p>Draw a shape on empty space and it tries. Stroke it straight after to praise it. Five praised tries and it knows the trick.</p>
-    <ul id="tricks-list"></ul>
-    <div class="btns"><button id="tricks-close">Done</button></div>
-  </div>
-  <div id="import" class="sheet">
-    <h2>Bring in your Glimmerkin</h2>
-    <p>In the game, open the ? sheet, tap Keep a copy, copy the code and paste it here. Your creature in the game is not changed, and what it learns here stays here for now.</p>
-    <textarea id="code" placeholder="GLIM1.…" aria-label="Save code"></textarea>
-    <div class="err" id="code-err"></div>
-    <div class="btns"><button id="import-ok">Bring in</button><button id="import-cancel" class="ghost">Cancel</button></div>
-  </div>
+  <div id="sheet" class="sheet"></div>
 </div>
+<script src="src/core.js"></script>
 <script type="module" src="src/main.js"></script>
 </body>
 </html>

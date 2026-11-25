@@ -74,7 +74,7 @@ check(/learned to spin/.test(await page.textContent('#toast')), 'a toast says it
 await page.click('#tricks-btn'); await page.waitForTimeout(400);
 check(/Learned/.test(await page.textContent('#tricks-list')), 'the tricks sheet lists spin as learned');
 await page.screenshot({ path: SHOTS + '/4-tricks-sheet.png' });
-await page.click('#tricks-close'); await page.waitForTimeout(400);
+await page.click('#sheet.on button[data-do="x"]'); await page.waitForTimeout(400);
 
 // a gentle tap on the berry tosses one straight to it, which it catches
 const bel0 = (await G()).belly;
