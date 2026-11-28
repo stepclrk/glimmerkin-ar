@@ -284,5 +284,5 @@ export function buildCreature(L, s) {
   }
   const headWorld = (out) => body.localToWorld(out.set(0, h * 0.2, w * 0.6));
 
-  return { root, body, hits, update, spotAt, headWorld, size: { w, h, s } };
+  return { root, body, hits, update, spotAt, headWorld, shadow, size: { w, h, s } };
 }
