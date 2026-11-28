@@ -6,6 +6,9 @@ import * as THREE from 'three';
 import { TAU, clamp, petLook, lookOf, littleLevel, PET_TRICKS, LITTLE_TRICK, LEARN_AT, PET_TRICK_TIME, shapeOf, SPOTS, favSpot, localDay, readSaveCode, fromGame, newGame, newLittle } from './glim.js';
 import { buildCreature } from './creature.js';
 import { initQuest, startQuest, questTick, questTap, questActive, questDebug, questSpan } from './quest.js';
+import { createRoom, createDepth } from './room.js';
+import { initRoam, roam, move as roamMove, goTo, comeHere, home as roamHome, stop as stopRoam, away, surfNow } from './roam.js';
+import { initPlay, game, playing, counting, startSeek, startEggs, stopGame, tickPlay, tap as playTap, previewRoom } from './play.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -39,6 +42,7 @@ $('#stage').appendChild(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 20);
 function aim(k) {   // the preview camera: far enough back that the nest, or the whole quest board, fits the screen's width
+  if (k === 'room') { const tanW = Math.tan(camera.fov * Math.PI / 360) * camera.aspect, d = Math.max(1.6, 0.78 / tanW); camera.position.set(0, d * 0.55, d * 0.85); camera.lookAt(0, -0.3, -0.02); aimed = k; return; }
   const tanW = Math.tan(camera.fov * Math.PI / 360) * camera.aspect, base = k === 'quest' ? [0, 0.5, 0.42] : [0, 0.25, k === 'menu' ? 0.62 : 0.58];
   const half = k === 'quest' ? questSpan() / 2 + 0.02 : k === 'menu' ? 0.12 : 0.21, d0 = Math.hypot(base[1], base[2]), d = Math.max(d0, half / tanW * 1.05);
   camera.position.set(0, base[1] * d / d0, base[2] * d / d0); camera.lookAt(0, k === 'quest' ? 0 : k === 'menu' ? -0.035 : 0.06, k === 'quest' ? 0.03 : 0); aimed = k;
@@ -56,6 +60,8 @@ const rim = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.006, 8, 64), new THRE
 const reticle = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.062, 40).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffd36b, transparent: true, opacity: 0.9 }));
 reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
 const nest = new THREE.Group(); world.add(nest);
+const room = createRoom(world);                              // the surfaces and walls around the nest, in the nest's frame
+const depth = createDepth(THREE, renderer, scene);          // the real world's depth, where the phone has it
 
 /* ---------- state ---------- */
 let mode = 'menu', T = 0, placed = true, popT = 1;
@@ -273,7 +279,7 @@ const petFx = k => { if (k === 'kiss') { camPose(); const d = camPos.clone().sub
 /* ---------- sleep ---------- */
 function setSleep(on) {
   const p = S.pet; if (on === p.asleep) return; p.asleep = on;
-  if (on) { A.trick = null; toast(p.name + ' curls up and falls asleep. Rest fills fifteen times as fast. Tap it to wake it.', 3400); }
+  if (on) { A.trick = null; stopRoam(); if (roam.cling) roamHome(); toast(p.name + ' curls up and falls asleep. Rest fills fifteen times as fast. Tap it to wake it.', 3400); }
   else { setMood('happy', 1.2); A.squash = 0.12; toast(p.name + ' wakes with a stretch.' + (p.rest >= TRAVEL_REST ? ' It is rested enough to travel.' : ''), 2600); }
   sfx(on ? 'try' : 'chirp'); hud(); save();
 }
@@ -306,37 +312,64 @@ function launch(vx, vy) {
   camPose();
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camQ), right = new THREE.Vector3(1, 0, 0).applyQuaternion(camQ), down = new THREE.Vector3(0, -1, 0).applyQuaternion(camQ);
   const start = camPos.clone().addScaledVector(fwd, 0.12).addScaledVector(down, 0.06);
-  const home = world.localToWorld(new THREE.Vector3(0, 0, 0)), mouthY = home.y + C.size.h * 1.7;
+  const home = world.localToWorld(A.off.clone()), mouthY = home.y + C.size.h * 1.7;
   const hor = new THREE.Vector3(home.x - start.x, 0, home.z - start.z), dist = hor.length();
   const power = clamp(vy / 1600, 0.45, 1.6), f = clamp(0.5 + 0.5 * power, 0.72, 1.3);
   const side = new THREE.Vector3(right.x, 0, right.z).normalize();
   const aimP = new THREE.Vector3(start.x, 0, start.z).addScaledVector(hor, f).addScaledVector(side, clamp(vx / Math.max(vy, 1), -1, 1) * dist * 0.35);
   const Tf = clamp(0.45 + 0.4 * dist, 0.55, 1.1);
   const v = new THREE.Vector3((aimP.x - start.x) / Tf, (mouthY - start.y + 0.5 * GRAV * Tf * Tf) / Tf, (aimP.z - start.z) / Tf);
-  const aimLocal = world.worldToLocal(new THREE.Vector3(aimP.x, home.y, aimP.z)); aimLocal.y = 0;
-  const reach = aimLocal.length() < 0.2;
+  const aimLocal = world.worldToLocal(new THREE.Vector3(aimP.x, home.y, aimP.z)); aimLocal.y = A.off.y;
+  // it can reach a berry coming down within 20 cm of it, on the surface it stands on (and never from a wall)
+  const near = Math.hypot(aimLocal.x - A.off.x, aimLocal.z - A.off.z) < 0.2, under = room.under(aimLocal.x, aimLocal.z, A.off.y + 0.05, 0.1);
+  const reach = near && !roam.cling && !game.k && (!!under || !room.surfs.length);
   scene.add(berryMesh); berryMesh.position.copy(start); berryMesh.visible = true; berryMesh.scale.setScalar(1);
   toss = { v, t: 0, T: Tf, reach, el, caught: false, landed: false, restT: 0, floorY: home.y };
-  A.goal = reach ? aimLocal : null; sfx('toss');
+  stopRoam(); if (reach) roam.plan.push({ k: 'walk', to: aimLocal, speed: dist => { const left = toss && !toss.caught ? Math.max(0.05, toss.T - 0.25 - toss.t) : 0.8; return Math.min(dist / left, 0.6); } });
+  sfx('toss');
 }
 function tickToss(dt) {
   if (!toss) return;
   const q = toss; q.t += dt;
   if (!q.caught && !q.landed) {
+    const ground = groundUnder(berryMesh.position, q);     // what is under it before this step, so it cannot drop through
     q.v.y -= GRAV * dt; berryMesh.position.addScaledVector(q.v, dt); berryMesh.rotation.x += dt * 8;
     if (q.reach && q.t >= q.T) {
       q.caught = true; berryMesh.visible = false; scene.remove(berryMesh);
       eat(q.el); catchRun++; S.j.catchBest = Math.max(S.j.catchBest || 0, catchRun);
       setMood('eat', 1.2); sfx('munch'); floatText(head(), catchRun > 1 ? catchRun + ' in a row!' : 'Caught!');
       if (catchRun === 10) toast('Ten catches in a row!', 3000);
-      setTimeout(() => { if (toss === q) toss = null; A.goal = new THREE.Vector3(); }, 1200);
-    } else if (berryMesh.position.y <= q.floorY + 0.011 && q.v.y < 0) {
-      if (Math.abs(q.v.y) > 0.4 && !q.bounced) { q.bounced = true; q.v.y *= -0.35; q.v.x *= 0.5; q.v.z *= 0.5; berryMesh.position.y = q.floorY + 0.011; }
+      setTimeout(() => { if (toss === q) toss = null; backToMiddle(); }, 1200);
+    } else if (berryMesh.position.y <= ground + 0.011 && q.v.y < 0) {
+      q.floorY = ground;
+      if (Math.abs(q.v.y) > 0.4 && !q.bounced) { q.bounced = true; q.v.y *= -0.3; q.v.x *= 0.25; q.v.z *= 0.25; berryMesh.position.y = q.floorY + 0.011; }
+      else if (q.surf && roam.on && !S.pet.asleep && !game.k) fetchBerry(q);
       else { q.landed = true; berryMesh.position.y = q.floorY + 0.011; catchRun = 0; setMood('sad', 1.2); sfx('miss'); S.pantry[q.el] = (S.pantry[q.el] || 0) + 1; hud(); toast(S.pet.name + ' missed it, so it goes back in the pantry. Flick harder or softer.', 2600); }
     }
     if (berryMesh.position.y < q.floorY - 1) { q.landed = true; }
-  } else if (q.landed) { q.restT += dt; berryMesh.scale.setScalar(Math.max(0.01, 1 - Math.max(0, q.restT - 1) * 2)); if (q.restT > 1.5) { scene.remove(berryMesh); berryMesh.scale.setScalar(1); toss = null; A.goal = new THREE.Vector3(); } }
+  } else if (q.landed) { q.restT += dt; berryMesh.scale.setScalar(Math.max(0.01, 1 - Math.max(0, q.restT - 1) * 2)); if (q.restT > 1.5) { scene.remove(berryMesh); berryMesh.scale.setScalar(1); toss = null; backToMiddle(); } }
+  else if (q.fetch && q.restT > 20) { scene.remove(berryMesh); toss = null; S.pantry[q.el] = (S.pantry[q.el] || 0) + 1; hud(); }
+  if (q.fetch) q.restT += dt;
 }
+/* The height of whatever is under a falling berry: a surface of the room, or the height it was thrown at. */
+function groundUnder(wp, q) {
+  if (!room.surfs.length) return q.floorY;
+  const l = world.worldToLocal(wp.clone()), u = room.under(l.x, l.z, l.y, 5); q.surf = u ? u.s : null;
+  return u ? world.position.y + u.y : q.floorY - 2;
+}
+/* A berry that lands somewhere in the room: it runs over, eats it there and comes back pleased. */
+function fetchBerry(q) {
+  q.landed = false; q.caught = true; q.fetch = true; q.restT = 0; catchRun = 0; berryMesh.position.y = q.floorY + 0.011;
+  const at = world.worldToLocal(berryMesh.position.clone()); at.y = q.surf.y + q.surf.shift.y;
+  const off = new THREE.Vector3(A.off.x - at.x, 0, A.off.z - at.z); off.setLength(Math.min(0.05, off.length()));
+  toast(S.pet.name + ' runs to fetch it.', 1800);
+  goTo(q.surf, at.clone().add(off), { run: true, then: () => {
+    if (toss !== q) return; scene.remove(berryMesh); toss = null; eat(q.el); setMood('eat', 1.2); sfx('munch'); floatText(head(), 'Fetched it!');
+  } });
+}
+/* After a catch on the nest's table, back to the middle; out in the room it stays where it is. */
+function backToMiddle() { if (!roam.on && !away() && !busy()) roam.plan.push({ k: 'walk', to: new THREE.Vector3(0, 0, 0) }); }
+const busy = () => !!(roam.step || roam.plan.length);
 
 /* ---------- each frame, in the nest ---------- */
 const tl = new THREE.Vector3();
@@ -357,22 +390,17 @@ function tickNest(dt) {
   }
   if (A.trick) { A.trick.t += dt; trickPose(o, A.trick, SIZE, petFx); if (A.trick.t >= A.trick.dur) A.trick = null; }
   if (!A.trick && !ptr && !toss && !p.asleep && p.joy >= 60) { A.selfT -= dt; if (A.selfT <= 0) { A.selfT = 40 + Math.random() * 40; const ks = Object.keys(PET_TRICKS).filter(knows); if (ks.length) doTrick(ks[(Math.random() * ks.length) | 0], true); } }
-  if (A.goal) {
-    const d = A.goal.clone().sub(A.off); d.y = 0; const dist = d.length();
-    const left = toss && !toss.caught ? Math.max(0.05, toss.T - 0.25 - toss.t) : 0.8, sp = Math.min(dist / left, 0.6);
-    if (dist > 0.003) { A.off.addScaledVector(d.normalize(), Math.min(dist, sp * dt)); o.lift += Math.abs(Math.sin(T * 16)) * 0.012; }
-    else if (!toss) A.goal = null;
-  }
+  roamMove(dt, o, !!(A.trick || ptr || toss || game.k || sheetOpen()));
   if (toss && toss.reach && !toss.caught) { const left = toss.T - toss.t; if (left < 0.3) { o.lift += Math.sin(Math.PI * clamp(1 - left / 0.3, 0, 1) * 0.5) * 0.03; o.squash -= 0.05; } o.mood = 'idle'; }
-  C.root.position.set(A.off.x, 0, A.off.z);
-  camPose(); const target = toss && !toss.caught && !toss.landed ? berryMesh.position : camPos;
+  C.root.position.copy(A.off);
+  camPose(); const target = roam.face ? world.localToWorld(roam.face.clone()) : toss && !toss.caught && !toss.landed ? berryMesh.position : camPos;
   A.yaw = turn(A.yaw, yawTo(A.off, target), Math.min(1, dt * 6)); C.root.rotation.y = A.yaw;
   if (popT < 1) { popT = Math.min(1, popT + dt * 2.5); const k = popT < 0.7 ? popT / 0.7 * 1.15 : 1.15 - (popT - 0.7) / 0.3 * 0.15; nest.scale.setScalar(Math.max(0.001, k)); }
   C.update(dt, T, o);
   // the littles: near the Glimmerkin, hopping about now and then, doing their kind's trick, curled up at bedtime
   LC.forEach((f, i) => {
     const lo = blank(), n = Math.max(1, LC.length - 1), a = -1.2 + 2.4 * i / n;
-    const want = p.asleep ? new THREE.Vector3(Math.sin(a) * 0.08, 0, Math.cos(a) * 0.05 + 0.02).add(A.off) : f.home;
+    const want = p.asleep ? new THREE.Vector3(Math.sin(a) * 0.08, 0, Math.cos(a) * 0.05 + 0.02).add(away() ? new THREE.Vector3() : A.off) : f.home;
     if (!p.asleep && (f.hopT -= dt) < 0) { f.hopT = 6 + Math.random() * 10; f.home = homeSpot(i, LC.length).add(new THREE.Vector3((Math.random() - 0.5) * 0.05, 0, (Math.random() - 0.5) * 0.04)); }
     const d = want.clone().sub(f.off), dist = d.length(); if (dist > 0.002) { f.off.addScaledVector(d.normalize(), Math.min(dist, 0.12 * dt)); lo.lift += Math.abs(Math.sin(T * 14 + i)) * 0.008; }
     if (f.moodT > 0) { f.moodT -= dt; lo.mood = f.mood; }
@@ -390,7 +418,8 @@ function tick(dt) {
   p.belly = Math.max(0, p.belly - dt / 360); p.joy = Math.max(0, p.joy - dt / 280); p.rest = Math.min(100, p.rest + dt / (p.asleep ? 4 : 60));
   if ((saveT += dt) > 5) { saveT = 0; save(); hud(); }
   tickAnims(dt);
-  if (questActive()) questTick(dt, T); else tickNest(dt);
+  if (questActive()) questTick(dt, T); else { tickNest(dt); tickPlay(dt); }
+  tickArrow();
   tickParts(dt); tickFloats(dt); tickToss(dt);
 }
 
@@ -414,7 +443,8 @@ function whatAt(x, y) {
 const touch = $('#touch');
 touch.addEventListener('pointerdown', e => {
   if (mode === 'menu') return; audio(); e.preventDefault();
-  if (ptr) return; touch.setPointerCapture && touch.setPointerCapture(e.pointerId);
+  if (ptr) return;
+  if (!questActive() && playTap(e.clientX, e.clientY)) return;      // a tap that finds the Glimmerkin or an egg touch.setPointerCapture && touch.setPointerCapture(e.pointerId);
   const w = whatAt(e.clientX, e.clientY) || {};
   ptr = Object.assign({ id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, t0: T, path: [{ x: e.clientX, y: e.clientY }], moved: 0, acc: 0, big: false }, w);
   A.hugT = 0;
@@ -467,25 +497,44 @@ bb.addEventListener('pointerup', e => {
 $('#berry-change').addEventListener('click', e => { e.stopPropagation(); const have = ELS.filter(k => S.pantry[k] > 0); if (have.length < 2) return; berryEl = have[(have.indexOf(berryEl) + 1) % have.length]; hud(); });
 
 /* ---------- AR ---------- */
-let xrSession = null, hitSource = null, lastHit = null, anchor = null, arOK = false;
+let xrSession = null, hitSource = null, lastHit = null, anchor = null, arOK = false, scanSources = [], scanT = 0, scanN = 0, hasDepth = false;
+const mHit = new THREE.Matrix4(), pHit = new THREE.Vector3(), nHit = new THREE.Vector3(), qHit = new THREE.Quaternion(), sHit = new THREE.Vector3();
+/* A hit test result into the room map, in the nest's frame. */
+function learn(r, ref) {
+  const pose = r.getPose(ref); if (!pose) return;
+  mHit.fromArray(pose.transform.matrix); mHit.decompose(pHit, qHit, sHit); nHit.set(0, 1, 0).applyQuaternion(qHit);
+  const p = world.worldToLocal(pHit.clone()), n = nHit.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), -world.rotation.y);
+  const got = room.add(p, n, s => { if (r.createAnchor) r.createAnchor().then(a => { s.anchor = a; }).catch(() => { }); });   // s.a0 is where it was seen, in the nest's frame
+  if (got && scanT < 40 && Math.random() < 0.5) burst(pHit, 1, got === 'wall' ? 'star' : 'dot', { v: 0.004, up: 0.01, g: 0, life: 0.9, size: 0.012, color: got === 'wall' ? 0xb9f3ff : 0xffe27a });
+}
 function placeHere() {
   if (!lastHit) { toast('Move your phone slowly over a table until the gold ring shows.'); return; }
   const m = new THREE.Matrix4().fromArray(lastHit.pose.transform.matrix); world.position.setFromMatrixPosition(m); faceCamera();
-  world.visible = true; placed = true; popT = 0; reticle.visible = false; A.off.set(0, 0, 0); A.goal = null;
+  world.visible = true; placed = true; popT = 0; reticle.visible = false;
+  room.seedNest(0.3); roamHome(); roam.on = true; roam.brainT = 8; scanT = 0; stopGame(true);
   anchor = null; if (lastHit.result.createAnchor) lastHit.result.createAnchor().then(a => { anchor = a; }).catch(() => { });
-  sfx('chirp'); if (!questActive()) toast('Say hello to ' + S.pet.name + '. Stroke it, draw a shape for a trick, or flick a berry.', 3600);
+  sfx('chirp'); if (!questActive()) toast('Say hello to ' + S.pet.name + '. Now look slowly around the room: the floor, tables, the sofa, the walls. Wherever you look, it can go.', 5200);
   $('#place-hint').classList.remove('on');
 }
 async function startAR() {
   audio();
   try {
-    const s = await navigator.xr.requestSession('immersive-ar', { requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay', 'anchors'], domOverlay: { root: $('#overlay') } });
+    const s = await navigator.xr.requestSession('immersive-ar', {
+      requiredFeatures: ['hit-test'], optionalFeatures: ['dom-overlay', 'anchors', 'depth-sensing'], domOverlay: { root: $('#overlay') },
+      depthSensing: { usagePreference: ['cpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] }
+    });
     renderer.xr.setReferenceSpaceType('local'); await renderer.xr.setSession(s);
     xrSession = s; const viewer = await s.requestReferenceSpace('viewer'); hitSource = await s.requestHitTestSource({ space: viewer });
-    s.addEventListener('end', () => { xrSession = null; hitSource = null; anchor = null; lastHit = null; leave(); });
+    // more rays, spread over the view, so looking around the room finds surfaces quickly
+    scanSources = [];
+    if (window.XRRay) for (const [x, y] of [[-0.35, 0.25], [0.35, 0.25], [-0.35, -0.3], [0.35, -0.3], [0, -0.45], [0, 0.4]]) {
+      try { scanSources.push(await s.requestHitTestSource({ space: viewer, offsetRay: new XRRay({ x: 0, y: 0, z: 0, w: 1 }, { x, y, z: -1, w: 0 }) })); } catch (e) { }
+    }
+    s.addEventListener('end', () => { xrSession = null; hitSource = null; scanSources = []; anchor = null; lastHit = null; depth.stop(); leave(); });
     mode = 'ar'; placed = false; world.visible = false; table.visible = rim.visible = false; scene.background = null;
     $('#menu').classList.add('off'); setHud(); $('#move').hidden = false; $('#place-hint').classList.add('on');
     if (!s.domOverlayState) toast('This phone has no overlay for AR, so the buttons will not show.', 4000);
+    try { hasDepth = s.enabledFeatures ? s.enabledFeatures.includes('depth-sensing') : !!s.depthUsage; } catch (e) { hasDepth = false; }
   } catch (e) { toast('AR could not start: ' + (e && e.message || e), 4000); }
 }
 function xrFrame(frame) {
@@ -497,11 +546,59 @@ function xrFrame(frame) {
     $('#place-hint').textContent = lastHit ? 'Tap to put ' + (questActive() ? 'the world' : S.pet.name) + ' here' : 'Move your phone slowly over a table or the floor';
   }
   if (anchor && frame.trackedAnchors && frame.trackedAnchors.has(anchor)) { const p = frame.getPose(anchor.anchorSpace, ref); if (p) world.position.setFromMatrixPosition(new THREE.Matrix4().fromArray(p.transform.matrix)); }
+  world.updateMatrixWorld();
+  // learning the room, once the nest is down
+  if (placed && !questActive() && (scanN++ % 2 === 0)) {
+    if (lastHit && hitSource) learn(lastHit.result, ref);
+    else if (hitSource) for (const r of frame.getHitTestResults(hitSource)) { learn(r, ref); break; }
+    for (const src of scanSources) { const rs = frame.getHitTestResults(src); if (rs.length) learn(rs[0], ref); }
+  }
+  if (placed && frame.trackedAnchors) room.follow(a => { if (!frame.trackedAnchors.has(a)) return null; const p = frame.getPose(a.anchorSpace, ref); return p ? world.worldToLocal(new THREE.Vector3().setFromMatrixPosition(mHit.fromArray(p.transform.matrix))) : null; });
+  // the real world's depth, so real things cover the Glimmerkin
+  if (hasDepth) { const vp = frame.getViewerPose(ref), bl = xrSession && xrSession.renderState.baseLayer; if (vp && vp.views.length && bl) depth.update(frame, vp.views[0], bl.framebufferWidth, bl.framebufferHeight); }
+  if (placed && !questActive()) roomHint(); else $('#room-hint').classList.remove('on');
+}
+function roomHint() {
+  const el = $('#room-hint'), flats = room.surfs.filter(s => s.cells.size >= 3 && s.kind !== 'nest').length, walls = room.walls.length;
+  scanT += 1 / 60;
+  if (scanT > 45 || game.k || sheetOpen()) { el.classList.remove('on'); return; }
+  el.textContent = (flats || walls ? 'Found ' + (flats ? flats + ' surface' + (flats > 1 ? 's' : '') : '') + (flats && walls ? ' and ' : '') + (walls ? 'a wall' + (walls > 8 ? 's' : '') : '') + '. ' : '') + (flats < 2 ? 'Look slowly around the room, at the floor and the furniture.' : 'It can roam there now. Keep looking to show it more.');
+  el.classList.add('on');
 }
 $('#overlay').addEventListener('beforexrselect', e => e.preventDefault());
 
+/* ---------- is a point hidden from the camera by something real (or, in the preview, by the pretend room)? ---------- */
+function hiddenFromCam(p) {
+  if (mode === 'ar') return depth.ok ? depth.hidden(p, viewCam()) : null;
+  const g = world.getObjectByName('preview-room'); if (!g || !g.visible) return null;
+  camPose(); const d = p.clone().sub(camPos), len = d.length(); ray.set(camPos, d.normalize()); ray.far = len - 0.03;
+  const h = ray.intersectObjects(g.userData.occluders.concat([table]), false); ray.far = Infinity; return h.length > 0;
+}
+/* A giggle from where it is: to the left or right, quieter when far away. */
+function giggleAt(p) {
+  const ac = audio(); if (!ac) return; camPose(); const rel = p.clone().sub(camPos), dist = rel.length(); rel.applyQuaternion(camQ.clone().invert());
+  const pan = clamp(rel.x / Math.max(0.3, dist) * 1.4, -1, 1), vol = clamp(0.2 / Math.max(0.5, dist), 0.03, 0.2);
+  const t = ac.currentTime, sp = ac.createStereoPanner ? ac.createStereoPanner() : null; if (sp) { sp.pan.value = pan; sp.connect(ac.destination); }
+  [0, 0.11, 0.22, 0.36].forEach((a, i) => { const o = ac.createOscillator(), g = ac.createGain(), f = 900 + i * 120 + Math.random() * 60; o.type = 'sine'; o.frequency.setValueAtTime(f, t + a); o.frequency.exponentialRampToValueAtTime(f * 1.4, t + a + 0.08); g.gain.setValueAtTime(0.0001, t + a); g.gain.exponentialRampToValueAtTime(vol, t + a + 0.015); g.gain.exponentialRampToValueAtTime(0.0001, t + a + 0.09); o.connect(g).connect(sp || ac.destination); o.start(t + a); o.stop(t + a + 0.1); });
+}
+
+/* ---------- an arrow at the edge of the screen when it is out of sight ---------- */
+function tickArrow() {
+  const el = $('#arrow');
+  if (mode === 'menu' || questActive() || !placed || (game.k === 'seek') || !C.root.visible) { el.classList.remove('on'); return; }
+  const at = head(), s = toScreen(at), W = window.innerWidth, H = window.innerHeight, m = 40;
+  const inside = s.front && s.x > 0 && s.x < W && s.y > 70 && s.y < H - 60;
+  if (inside) { el.classList.remove('on'); return; }
+  let dx = s.x - W / 2, dy = s.y - H / 2; if (!s.front) { dx = -dx; dy = -dy; if (Math.abs(dx) < 1 && Math.abs(dy) < 1) dy = 1; }
+  const k = Math.min((W / 2 - m) / Math.max(1e-3, Math.abs(dx)), (H / 2 - m - 50) / Math.max(1e-3, Math.abs(dy)));
+  const x = W / 2 + dx * k, y = H / 2 + dy * k, ang = Math.atan2(dy, dx);
+  el.style.transform = 'translate(' + (x - 28) + 'px,' + (y - 28) + 'px)'; el.querySelector('i').style.transform = 'rotate(' + ang + 'rad)';
+  el.querySelector('span').textContent = mode === 'ar' ? camPose().distanceTo(at).toFixed(1) + ' m' : '';
+  el.classList.add('on');
+}
+
 /* ---------- the HUD for the nest and for a quest ---------- */
-function setHud() { const q = questActive(); document.body.classList.toggle('questing', q); $('#hud').classList.toggle('on', mode !== 'menu'); $('#nest-ui').hidden = q; $('#quest-ui').hidden = !q; nest.visible = !q; table.visible = rim.visible = mode !== 'ar' && !q; }
+function setHud() { const q = questActive(); $('#come').hidden = q || !roam.on; document.body.classList.toggle('questing', q); $('#hud').classList.toggle('on', mode !== 'menu'); $('#nest-ui').hidden = q; $('#quest-ui').hidden = !q; nest.visible = !q; table.visible = rim.visible = mode !== 'ar' && !q; }
 
 /* ---------- where to? ---------- */
 function rollPortals(force) {
@@ -527,28 +624,60 @@ function openWhere() {
 }
 function goQuest(pt) {
   const party = S.party.map(id => S.littles.find(l => l.id === id)).filter(Boolean);
-  if (mode === 'ar') faceCamera();
-  toss = null; scene.remove(berryMesh); A.trick = null;
+  if (mode === 'ar') { roomYaw = world.rotation.y; faceCamera(); }   // the board faces you; the room's frame turns back afterwards
+  toss = null; scene.remove(berryMesh); A.trick = null; stopGame(true); roamHome();
   startQuest(pt, party);
   setHud(); aimFor();
 }
-function aimFor() { if (mode === 'preview') aim(questActive() ? 'quest' : 'nest'); }
+let roomYaw = null;
+function aimFor() { if (mode === 'preview') aim(questActive() ? 'quest' : roam.on ? 'room' : 'nest'); }
 
 /* ---------- menu, preview and leaving ---------- */
 function preview() {
-  audio(); mode = 'preview'; placed = true; world.visible = true; scene.background = BG; popT = 0; world.rotation.y = 0;
+  audio(); mode = 'preview'; placed = true; world.visible = true; scene.background = BG; popT = 0; world.rotation.y = 0; roam.on = false; room.seedNest(0.3); roamHome();
   $('#menu').classList.add('off'); setHud(); $('#move').hidden = true; aimFor();
   if (!questActive()) toast('Stroke ' + S.pet.name + ', draw a shape on the sky for a trick, or flick a berry up from the button.', 3600);
 }
 function leave() {
   if (xrSession) { xrSession.end(); return; }
+  stopGame(true); roam.on = false; previewRoom(room, world, false); room.reset(); roamHome(); setHud();
   mode = 'menu'; aim('menu'); placed = true; world.visible = true; world.position.set(0, 0, 0); world.rotation.y = 0; scene.background = BG; reticle.visible = false;
   $('#menu').classList.remove('off'); setHud(); $('#place-hint').classList.remove('on'); closeSheet(); save();
 }
 $('#start-ar').addEventListener('click', startAR);
 $('#start-preview').addEventListener('click', preview);
 $('#leave').addEventListener('click', e => { e.stopPropagation(); leave(); });
-$('#move').addEventListener('click', e => { e.stopPropagation(); placed = false; world.visible = false; anchor = null; $('#place-hint').classList.add('on'); });
+$('#move').addEventListener('click', e => { e.stopPropagation(); stopGame(true); placed = false; world.visible = false; anchor = null; $('#place-hint').classList.add('on'); });
+$('#come').addEventListener('click', e => { e.stopPropagation(); audio(); callIt(); });
+$('#play').addEventListener('click', e => { e.stopPropagation(); audio(); openPlay(); });
+function callIt() {
+  const p = S.pet; if (p.asleep) { toast(p.name + ' is asleep. Tap it to wake it.'); return; } if (game.k) return;
+  if (mode === 'preview' && !roam.on) { toast(p.name + ' is right here. Turn on Roam the room to let it wander.'); return; }
+  if (comeHere('Here I am!')) { sfx('chirp'); toast(p.name + ' is coming.', 1600); } else toast('Point the phone at the floor near you, so ' + p.name + ' can find its way.', 3000);
+}
+/* The Play sheet: hide and seek, the egg hunt, and roaming on or off. */
+function openPlay() {
+  const p = S.pet, j = S.j, nm = esc(p.name);
+  const rows = game.k ? '<button class="row" data-do="stop"><b>Stop the game</b><small>' + (game.k === 'seek' ? 'Call ' + nm + ' out of hiding.' : 'Leave the eggs that are left.') + '</small></button>'
+    : '<button class="row" data-do="seek"><b>Hide and seek</b><small>Cover your eyes and count to ten while ' + nm + ' hides somewhere in the room: under a table, behind the sofa. Listen for its giggle, then find it with the phone.' + (j.seekBest ? ' Best: ' + j.seekBest + ' s.' : '') + '</small></button>' +
+      '<button class="row" data-do="eggs"><b>Egg hunt</b><small>' + nm + ' hides five glimmer eggs around the room. Each one you find is stardust and a berry.</small></button>';
+  const roamRow = '<button class="row" data-do="roam"><b>' + (roam.on ? 'Keep it near the nest' : 'Roam the room') + '</b><small>' + (roam.on ? 'Now it wanders the room by itself: hopping between the floor, tables and seats, and up the walls.' : 'Let it wander the room by itself.') + (mode === 'preview' ? ' On this screen the room is a pretend one.' : '') + '</small></button>';
+  openSheet('<h2>Play</h2><p>' + (mode === 'ar' ? (hasDepth ? 'This phone can see depth, so real furniture hides ' + nm + '.' : 'This phone has no depth sensing, so ' + nm + ' shows through furniture, but it still hides under tables and behind you.') : 'In the preview the room is pretend: a table, a stool and a wall.') + '</p>' + rows + roamRow + '<div class="btns"><button class="ghost" data-do="x">Not now</button></div>', {
+    x: closeSheet,
+    stop: () => { closeSheet(); stopGame(); },
+    seek: () => { closeSheet(); ensureRoom(); startSeek(); },
+    eggs: () => { closeSheet(); ensureRoom(); startEggs(5); },
+    roam: () => { closeSheet(); setRoam(!roam.on); }
+  });
+}
+function setRoam(on) {
+  roam.on = on; stopRoam();
+  if (mode === 'preview') { previewRoom(room, world, on); if (!on) room.seedNest(0.3); roamHome(); aimFor(); }
+  else if (!on) { const n = room.surfs.find(s => s.kind === 'nest'); if (n) goTo(n, new THREE.Vector3(0, 0, 0)); }
+  setHud(); toast(on ? S.pet.name + ' is off to explore.' : S.pet.name + ' stays by the nest.', 2000);
+}
+/* The games need a room: in the preview, the pretend one. */
+function ensureRoom() { if (mode === 'preview' && !roam.on) { roam.on = true; previewRoom(room, world, true); roamHome(); aimFor(); setHud(); } }
 $('#sleep').addEventListener('click', e => { e.stopPropagation(); setSleep(!S.pet.asleep); });
 $('#where').addEventListener('click', e => { e.stopPropagation(); openWhere(); });
 $('#tricks-btn').addEventListener('click', e => { e.stopPropagation(); openTricks(); });
@@ -577,9 +706,12 @@ window.addEventListener('resize', () => { if (renderer.xr.isPresenting) return; 
 document.addEventListener('visibilitychange', () => { if (document.hidden) save(); });
 
 /* ---------- the quest module gets what it needs from here ---------- */
+initRoam({ THREE, world, A, room, C: () => C, S: () => S, T: () => T, camPose, get camPos() { return camPos; }, get camQ() { return camQ; }, setMood, floatText, head, burst, sfx, toast });
+initPlay({ world, A, room, C: () => C, S: () => S, camPose, get camPos() { return camPos; }, get camQ() { return camQ; }, viewCam, rayAt, setMood, floatText, head, burst, sfx, toast, anim, save, hud, gainXp,
+  hiddenFromCam, giggleAt, questActive, mode: () => mode, ELS, BERRY });
 initQuest({
   THREE, scene, world, get S() { return S; }, save, hud, toast, floatText, burst, sfx, anim, wait, openSheet, closeSheet, sheetOpen, rayAt, camPose, gainXp,
-  rebuild, done: () => { setHud(); aimFor(); }, rollPortals, esc, NEST_ROOM, TRAVEL_REST, trickPose, littleLine, petLook
+  rebuild, done: () => { if (mode === 'ar' && roomYaw !== null) world.rotation.y = roomYaw; roomYaw = null; setHud(); aimFor(); }, rollPortals, esc, NEST_ROOM, TRAVEL_REST, trickPose, littleLine, petLook
 });
 
 rebuild(); checkAR();
@@ -599,5 +731,12 @@ window.__glim = {
   screenOfEgg(i) { return toScreen(EG[i].mesh.getWorldPosition(new THREE.Vector3())); },
   screenOfLittle(i) { return toScreen(LC[i].c.root.localToWorld(new THREE.Vector3(0, LC[i].c.size.h, 0))); },
   favSpot: () => favSpot(S.pet.seed), look: () => look, quest: () => questDebug(toScreen),
-  setRest(n) { S.pet.rest = n; hud(); }, addEgg(twin) { S.eggs.push({ hue: 200, seed: 99, warm: 0, twin: !!twin }); rebuild(); }
+  setRest(n) { S.pet.rest = n; hud(); }, addEgg(twin) { S.eggs.push({ hue: 200, seed: 99, warm: 0, twin: !!twin }); rebuild(); },
+  room: () => ({ surfs: room.surfs.map(s => ({ id: s.id, y: +(s.y + s.shift.y).toFixed(3), n: s.cells.size, kind: s.kind, label: room.label(s) })), walls: room.walls.length }),
+  pet: () => ({ x: A.off.x, y: A.off.y, z: A.off.z, surf: (surfNow() || {}).id || null, cling: !!roam.cling, moving: !!(roam.step || roam.plan.length), visible: C.root.visible, on: roam.on }),
+  game: () => ({ k: game.k, phase: game.phase, found: game.found, eggs: game.eggs.map(e => ({ done: e.done, ...toScreen(e.m.getWorldPosition(new THREE.Vector3())) })), spot: game.spot ? { covered: room.covered(game.spot.s, game.spot.c), label: room.label(game.spot.s) } : null }),
+  setRoam, openPlay, startSeek: () => { ensureRoom(); return startSeek(); }, startEggs: () => { ensureRoom(); return startEggs(5); },
+  goSurf(id) { const s = room.byId(id); const c = room.cellsOf(s)[0]; goTo(s, room.cellPos(s, c)); }, cling() { const w = room.walls[0]; import('./roam.js').then(m => m.clingTo(w, surfNow())); },
+  berry: () => toss ? { ...world.worldToLocal(berryMesh.position.clone()), reach: toss.reach, landed: toss.landed, fetch: !!toss.fetch, surf: toss.surf ? toss.surf.id : null } : null,
+  think(n) { roam.brainT = n || 0; }, arrow: () => $('#arrow').classList.contains('on'), skip(t) { game.t += t; }
 };

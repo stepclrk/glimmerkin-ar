@@ -85,6 +85,18 @@
   .chip small { color: var(--dim); font-weight: 400; } .chip.on { background: var(--gold); color: #2a1640; } .chip.on small { color: #4a2a60; }
   .sheet li em { color: var(--dim); font-style: normal; font-size: 13px; }
   .sheet ul.loot li { justify-content: flex-start; }
+  #room-hint, #play-hint { position: absolute; left: 50%; bottom: calc(150px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: min(92vw, 420px); background: var(--panel); border-radius: 999px; padding: 8px 14px; font-size: 14px; text-align: center; display: none; pointer-events: none !important; }
+  #room-hint.on, #play-hint.on { display: block; }
+  #play-hint { color: var(--gold); font-weight: 800; }
+  #count { position: absolute; inset: 0; background: rgba(14, 6, 30, .9); display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; pointer-events: none !important; }
+  #count.on { display: flex; }
+  #count b { font: 120px/1 'Mystery Quest', cursive; color: var(--gold); }
+  #count p { color: var(--dim); max-width: 320px; }
+  #arrow { position: absolute; left: 0; top: 0; width: 56px; height: 56px; display: none; pointer-events: none !important; }
+  #arrow.on { display: block; }
+  #arrow i { position: absolute; inset: 0; display: block; }
+  #arrow i::before { content: ''; position: absolute; left: 50%; top: 50%; width: 0; height: 0; border-top: 13px solid transparent; border-bottom: 13px solid transparent; border-left: 22px solid var(--gold); transform: translate(-30%, -50%); filter: drop-shadow(0 2px 4px rgba(0,0,0,.5)); }
+  #arrow span { position: absolute; left: -12px; right: -12px; top: 52px; text-align: center; font-size: 12px; font-weight: 800; color: var(--gold); text-shadow: 0 1px 4px rgba(0,0,0,.7); }
   @media (max-width: 380px) { #menu .row button { min-width: 0; flex: 1; } }
 </style>
 <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }</script>
@@ -104,7 +116,7 @@
       <button id="leave" class="ghost">Leave</button>
     </div>
     <div id="nest-ui">
-      <div class="side"><button id="where">Where to?</button><button id="sleep" class="ghost">Sleep</button></div>
+      <div class="side"><button id="where">Where to?</button><button id="play">Play</button><button id="come" class="ghost" hidden>Come here</button><button id="sleep" class="ghost">Sleep</button></div>
       <div class="bottom">
         <button id="tricks-btn" class="ghost">Tricks <small id="tricks-n"></small></button>
         <div class="berrywrap"><button id="berry" aria-label="Berry: flick up to throw, tap to toss"><span id="berry-name"></span><span>flick up</span></button><button id="berry-change" class="chip-btn" hidden>Change berry</button></div>
@@ -120,6 +132,10 @@
     </div>
   </div>
   <div id="place-hint"></div>
+  <div id="room-hint"></div>
+  <div id="play-hint"></div>
+  <div id="arrow"><i></i><span></span></div>
+  <div id="count"><b>10</b><p></p></div>
   <div id="toast" role="status"></div>
   <div id="menu">
     <h1>Glimmerkin AR</h1>

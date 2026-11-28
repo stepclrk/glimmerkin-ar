@@ -22,6 +22,28 @@ on quests across a little world laid out on the table.
 Joy, Belly and Rest drift with time, including while the page is closed. Bond grows with care and stardust, through
 the game's stages to a Mythic form.
 
+## Out in the room
+
+Once the nest is down, look slowly around the room: the floor, tables, the sofa, the walls. Gold sparkles show each bit
+of surface the phone has found, and blue ones the walls. Wherever you have looked, your Glimmerkin can go.
+
+| What | What happens |
+| --- | --- |
+| Left alone | It wanders: across the table, down to the floor, up onto a seat, up a wall for a look around, over to you, back to the littles. A hop it can't make, it vanishes in sparkles and reappears |
+| Out of sight | A gold arrow at the edge of the screen points to it, with how far away it is |
+| Come here | It comes to the floor or table in front of you |
+| A berry that sails past | It lands where it lands, on the floor or a seat, and your Glimmerkin runs to fetch it |
+| Low Joy or Belly | It comes to find you |
+| Play, Hide and seek | The screen goes dark while you count to ten and it hides: under a table, behind something, behind you. Listen for its giggle (left or right, louder when close). After half a minute sparkles rise from its hiding place. Tap it, or look straight at it from close by, to find it. Stardust, more for a quick find |
+| Play, Egg hunt | It hides five glimmer eggs around the room. Tap one, or bring the phone right up to it. Each is stardust and a berry, with a bonus for all five. Stuck, and it trots over to the nearest one |
+| Play, Keep it near the nest | Roaming off |
+
+On phones with ARCore depth (most mid-range and better), real things hide it: walk round the sofa and it is behind the
+sofa, and hide and seek knows what you can't see. Without depth it shows through furniture, but still hides under tables
+and behind you.
+
+The preview has a pretend room (a table, a stool and a wall) so all of this works on a screen too.
+
 ## On a quest
 
 Where to? offers three portals and lets you choose up to three littles. The world is built by the game's own
@@ -52,6 +74,8 @@ littles, eggs and pantry come across. Nothing goes back to the game: progress he
   body outline turned into 3D. Phase 1 replaces it with a proper rigged model.
 - Not in yet: world rules (the six twists), bosses, the journey, tools, the garden and the village. Saves are separate from the web game.
 - No iPhone: Safari has no WebXR AR.
+- The room is not remembered between visits (WebXR on Android has no lasting anchors), so you look around again each time.
+  Plain white walls and dim rooms are often not found. Depth gets rough past about 4 metres.
 
 ## How it is built
 
@@ -63,12 +87,16 @@ littles, eggs and pantry come across. Nothing goes back to the game: progress he
 | `src/creature.js` | The stand-in 3D creature built from `petLook`, and its poses |
 | `src/main.js` | WebXR session and placement, the nest: care, tricks, berries, eggs, sleep, Where to? |
 | `src/quest.js` | The quest board, sending littles, results |
+| `src/room.js` | The room map (surfaces and walls from hit tests, each surface anchored) and depth sensing (occlusion, and whether a spot is hidden from the camera) |
+| `src/roam.js` | Moving about the room: walking, hopping between surfaces, clinging to walls, vanishing; Come here; what it does when left alone |
+| `src/play.js` | Hide and seek, the egg hunt, and the preview's pretend room |
 | `test/preview.test.mjs` | Browser test of the nest: tricks, praise, berries, bringing in a creature |
 | `test/quest.test.mjs` | Browser test that hatches an egg and plays whole quests to the portal |
+| `test/room.test.mjs` | Browser test of the pretend room: roaming, hops, the wall, Come here, fetching, hide and seek, the egg hunt |
 
 Third-party code: [three.js](https://threejs.org) 0.170.0 (MIT), loaded from jsdelivr. No build step.
 
-WebXR features: `immersive-ar` with `hit-test` (required), `dom-overlay` and `anchors` (optional).
+WebXR features: `immersive-ar` with `hit-test` (required; several rays at once while you look around), `dom-overlay`, `anchors` and `depth-sensing` (cpu-optimized) (optional).
 
 ## Run and test
 
@@ -76,6 +104,7 @@ WebXR features: `immersive-ar` with `hit-test` (required), `dom-overlay` and `an
 python3 -m http.server 8765        # then open http://localhost:8765 (preview only; AR needs https)
 node test/preview.test.mjs          # needs Playwright: npm i -g playwright && npx playwright install chromium
 node test/quest.test.mjs            # QUESTS=5 to play more
+node test/room.test.mjs
 ```
 
 Each test prints `ALL CHECKS PASSED` or names what failed. `THREE_PATH` serves three.js from disk when the CDN is not

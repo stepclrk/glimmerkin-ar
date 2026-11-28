@@ -87,7 +87,7 @@ s = await G(); check(s.belly > bel0 + 10, 'it catches the berry and Belly rises 
 // a hard flick sails past and lands on the table
 const bb = await page.locator('#berry').boundingBox();
 const bx = bb.x + bb.width / 2, by = bb.y + bb.height / 2;
-await page.mouse.move(bx, by); await page.mouse.down(); await page.mouse.move(bx + 60, by - 300, { steps: 3 }); await page.mouse.up();
+await page.mouse.move(bx, by); await page.mouse.down(); await page.mouse.move(bx + 60, by - 300, { steps: 2 }); await page.mouse.up();
 await page.waitForTimeout(100);
 check((await G()).toss, 'flicking the berry throws one');
 await page.waitForFunction(() => !window.__glim.toss, null, { timeout: 6000 });
